@@ -1,0 +1,498 @@
+---
+title: "NYPD Shooting Incidents: A cleaning project."
+author: "J. Valencia"
+date: "2024-11-06"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+#Upload necesary packages for the work
+library(tidyverse)
+library(lubridate)
+library(visdat)
+
+```
+
+## Objective
+
+This project provides an overview of the fundamental stages of a data science process, offering insight into the initial steps, which include:
+
+-   Data summarisation to gain a deeper understanding of the data type in question
+-   Data transformation to ensure compatibility with the desired data type
+-   Data cleansing and transformation to facilitate the generation of meaningful insights.
+
+## Process
+
+### Import data
+
+The initial step is to accurately set the data into a variable that can be used at a later stage. The data was sourced from <https://data.gov> and is publicly accessible and free to use.
+
+```{r import data}
+
+nypd_shooting <- read_csv("https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv")
+
+
+
+```
+
+
+### Be aware of you data.
+
+Once the data has been imported, it is important to be aware of the data types in order to perform the initial transformations. Let us now review the structure of the data.
+
+```{r data_structure}
+str(nypd_shooting)
+```
+
+
+In relation to the aforementioned structure, we have identified the most appropriate data type for analysis, as outlined below:
+
+-   Factor: INCIDENT_KEY, BORO, LOC_OF_OCCUR_DESC, PRECINCT, JURISDICTION_CODE, LOC_CLASSFCTN_DESC, LOCATION_DESC, PERP_AGE_GROUP, PERP_SEX, PERP_RACE, VIC_AGE_GROUP, VIC_SEX, VIC_RACE, Lon_Lat
+-   Date: OCCUR_DATE
+-   Time: OCCUR_TIME
+-   Logic: STATISTICAL_MURDER_FLAG
+-   Numeric: X_COORD_CD, Y_COORD_CD, Latitude, Longitud,
+
+The results indicate that the majority of columns are of the factor type.
+
+Then, we proceed to inspect a few observations
+
+```{r df_head}
+head(nypd_shooting)
+
+```
+
+
+It is important to note that the data frame handles missing data differently. For some columns, the value is "NA". For others, it is "(null)", and for a few, a combination of both is used.
+
+Following the initial insight, we then proceeded to data type conversion and consistent handling of missing values.
+
+```{r change datatype}
+
+#Change to factors
+factor_cols <- c("INCIDENT_KEY", "BORO", "LOC_OF_OCCUR_DESC", "PRECINCT", "JURISDICTION_CODE", "LOC_CLASSFCTN_DESC", "LOCATION_DESC", "PERP_AGE_GROUP", "PERP_SEX", "PERP_RACE", "VIC_AGE_GROUP", "VIC_SEX", "VIC_RACE", "Lon_Lat")
+nypd_shooting[, factor_cols] <- lapply(nypd_shooting[, factor_cols], factor)
+
+#Change to dates
+nypd_shooting[["OCCUR_DATE"]] <- mdy(nypd_shooting[["OCCUR_DATE"]])
+
+#Change to time
+nypd_shooting[["OCCUR_TIME"]] <- hms(nypd_shooting[["OCCUR_TIME"]])
+
+#Numeric data are already in proper format.
+
+summary(nypd_shooting)
+str(nypd_shooting)
+
+```
+
+
+Once the factors have been identified, we will proceed to inspect the levels of the column in order to search for any unintended values.
+
+```{r factor_levels}
+
+#Inspect factor levels
+factor_cols_w_lev <- c("BORO", "LOC_OF_OCCUR_DESC", "PRECINCT", "JURISDICTION_CODE", "LOC_CLASSFCTN_DESC", "LOCATION_DESC", "PERP_AGE_GROUP", "PERP_SEX", "PERP_RACE", "VIC_AGE_GROUP", "VIC_SEX", "VIC_RACE")
+lapply(nypd_shooting[, factor_cols_w_lev], levels)
+
+```
+
+
+As a result, LOC_CLASSFCTN_DESC, LOCATION_DESC, PERP_AGE_GROUP, PERP_SEX and PERP_RACE uses ("null") can be used as a method to handle missing values, even in instances where the columns themselves already contain NA values. Also, AGE groups have strange values like "1020", "1028", ""224", "940", "UNKNOWN", and SEX and RACE groups also have "U" and "UNKNOWN" as a way to also handle null valueS. Let's change ("null"), "UNKNOWN" and "U" to a consistent format
+
+```{r change_na}
+
+#Inspect factor levels
+factor_cols_null <- c("LOC_CLASSFCTN_DESC", "LOCATION_DESC", "PERP_AGE_GROUP", "PERP_SEX", "PERP_RACE", "VIC_AGE_GROUP", "VIC_SEX", "VIC_RACE")
+
+for (col in factor_cols_null) {
+  nypd_shooting[[col]] <- fct_na_level_to_value(nypd_shooting[[col]], c("(null)", "U", "UNKNOWN"))
+}
+
+lapply(nypd_shooting[, factor_cols_w_lev], levels)
+
+```
+
+Subsequently, we will examine the extent to which data within specified age groups exhibit anomalous values.
+
+```{r inspect_anomalous_age_groups}
+
+to_exclude <- nypd_shooting %>%
+filter(PERP_AGE_GROUP %in% c("1020", "1025", "224", "940") | VIC_AGE_GROUP == "1022")
+
+to_exclude
+
+```
+
+Given the limited number of columns with anomalous values and the inability to infer which data should be replaced, the four observations in question will be deleted.
+
+```{r delete_anomalous_age_groups}
+
+to_exclude <- nypd_shooting %>%
+  filter(PERP_AGE_GROUP %in% c("1020", "1025", "224", "940") | VIC_AGE_GROUP == "1022")
+
+nypd_shooting <- nypd_shooting %>%
+  anti_join(to_exclude, by = c("PERP_AGE_GROUP", "VIC_AGE_GROUP"))
+
+summary(nypd_shooting)
+
+```
+
+
+
+Finally, lets inspect the ammount of "NA" values which can bias our data.
+
+```{r inspect_na}
+
+vis_miss(nypd_shooting)
+```
+
+
+As can be seen, the following variables contain over 5% missing values: LOC_OF_OCCUR_DESC, LOC_CLASSFCTN_DESC, LOCATION_DESC, PERP_AGE_GROUP, PERP_SEX, and PERP_RACE. While it is important to gain insights from the data we have, it is not advisable to make decisions based solely on these variables.
+
+It would be beneficial to investigate further the missing data across the different columns to see if we can gain some insight.
+
+
+```{r inspect_na_across_variables}
+
+na_loc_occur <- nypd_shooting %>%
+                  mutate(loc_occur_missing = is.na(LOC_OF_OCCUR_DESC)) %>%
+                  group_by(loc_occur_missing) %>%
+                  summarize(across(everything(),
+                   ~ if(is.factor(.)) {
+                     # For factors, return the most frequent level (mode)
+                     as.character(names(sort(table(.), decreasing = TRUE))[1])
+                   } else if(is.numeric(.)) {
+                     # For numeric variables, return the median
+                     median(., na.rm = TRUE)
+                   } else {
+                     # For other types (e.g., character), return the first value
+                     first(.)
+                   }))
+
+na_loc_occur
+
+```
+
+By setting the first variable, we can gain insight: 
+
+- Date difference between the FALSE and TRUE categories. This is significant because it allows us to identify categories that may have been introduced later in the data frame. Consequently, older observations may have more missing values.
+- The frequency of the Statistical Murder Flag being TRUE is higher than that of FALSE. This can be interpreted as more data being collected about the incident in murder cases.
+
+
+To verify the first insight, we will apply a filter based on the date and then review the *vis_miss* again.
+
+```{r check_date_differences}
+check_na_by_date <- nypd_shooting %>%
+  filter(OCCUR_DATE > as.Date("2022-05-05"))
+
+  vis_miss(check_na_by_date)
+
+
+```
+
+
+We have ascertained that the LOC_OF_OCCUR_DESC and LOC_CLASSFCTN_DESC columns no longer contain any missing values. However, there are no differences in other columns missing values.
+
+Lets inspect the second hypothesis and run the *vis_miss* again.
+
+
+```{r check_murder_diff}
+check_na_by_murder <- nypd_shooting %>%
+                      filter(STATISTICAL_MURDER_FLAG == TRUE)
+
+
+vis_miss(check_na_by_murder)
+
+
+```
+
+Here is no significant distinction between the missing values. We could conduct a similar analysis on the "Perpetrator" columns to ascertain whether we would gain more insight.
+
+```{r inspect_na_across_perp}
+
+na_perp <- nypd_shooting %>%
+                  mutate(perp_age_missing = is.na(PERP_AGE_GROUP)) %>%
+                  group_by(perp_age_missing) %>%
+                  summarize(across(everything(),
+                   ~ if(is.factor(.)) {
+                     # For factors, return the most frequent level (mode)
+                     as.character(names(sort(table(.), decreasing = TRUE))[1])
+                   } else if(is.numeric(.)) {
+                     # For numeric variables, return the median
+                     median(., na.rm = TRUE)
+                   } else {
+                     # For other types (e.g., character), return the first value
+                     first(.)
+                   }))
+
+na_perp
+
+```
+
+The significant disparities appear to be largely concentrated in the other "Perpetraror" column. It is noteworthy that PERP_AGE_GROUP for missing values is most common <18. Consequently, we can postulate that when the "Perp" is less than 18, the information is either not collected or not available. Let us examine this further.
+
+
+```{r check_perp_differences}
+check_na_by_perp <- nypd_shooting %>%
+                      filter(PERP_AGE_GROUP != "<18")
+
+check_na_by_perp_child <- nypd_shooting %>%
+                      filter(PERP_AGE_GROUP == "<18")
+
+vis_miss(check_na_by_perp)
+vis_miss(check_na_by_perp_child)
+
+
+```
+
+As can be seen in both visualisations, the PERP missing values remain consistent. This may indicates that the data is missing due to a lack of information from the perpetrator itself.
+
+Finally, let's investigete the column LOCATION_DESC to see if we can gain some insight
+
+```{r inspect_na_across_LOC_DESC}
+
+na_loc_desc <- nypd_shooting %>%
+                  mutate(loc_des_miss = is.na(LOCATION_DESC)) %>%
+                  group_by(loc_des_miss) %>%
+                  summarize(across(everything(),
+                   ~ if(is.factor(.)) {
+                     # For factors, return the most frequent level (mode)
+                     as.character(names(sort(table(.), decreasing = TRUE))[1])
+                   } else if(is.numeric(.)) {
+                     # For numeric variables, return the median
+                     median(., na.rm = TRUE)
+                   } else {
+                     # For other types (e.g., character), return the first value
+                     first(.)
+                   }))
+
+na_loc_desc
+
+```
+
+
+The primary difference appears to be in LOC_CLASSFCTN_DESC. This could be attributed to Street having a greater number of observations, but let's conduct a similar analysis.
+
+
+```{r check_na_across_street}
+
+check_na_street <- nypd_shooting %>%
+                    filter(LOC_CLASSFCTN_DESC == "STREET")
+
+check_na_other_than_street <- nypd_shooting %>%
+                    filter(LOC_CLASSFCTN_DESC != "STREET")
+
+vis_miss(check_na_street)
+vis_miss(check_na_other_than_street)
+```
+ 
+The number of proportional missing values has decreased significantly, indicating that we have less location information in outdoor environments. It should be noted that LOC_CLASSFCTN_DESC was introduced later in the data collection process.
+ 
+
+### Start data transformation
+
+Since this is a High-Level analysis and we are not using other tables to merge the data, we're going to get rid of INCIDENT_KEY, X_COORD_CD, Y_COORD_CD, Latitude, Longitude and Lon_Lat
+
+```{r select_initial_relevant_columns}
+
+nypd_shooting <- nypd_shooting %>%
+                  select(-c("INCIDENT_KEY", "X_COORD_CD", "Y_COORD_CD", "Latitude", "Longitude", "Lon_Lat"))
+
+head(nypd_shooting)
+```
+
+
+### Analizing data.
+
+At first, it would be beneficial to understand the evolution of cases over time grouped by month
+
+```{r cases_over_time}
+
+shoot_cases_over_time <- nypd_shooting %>%
+                            mutate(YearMonth = floor_date(OCCUR_DATE, "month")) %>%
+                            group_by(YearMonth) %>%
+                            summarize(COUNT = n())
+
+
+plot_cases_over_time = ggplot(shoot_cases_over_time, aes(YearMonth, COUNT)) + 
+                          geom_line(color = "black") +
+                          labs(title = "Cases Over Time",
+                                x = "Month", 
+                                y = "Number of Cases") + 
+                          theme_classic()
+
+
+plot_cases_over_time
+
+shoot_cases_over_time
+```
+
+
+It is notable that there appear to be two distinct patterns:
+- There seems to be a seasonal variation in the number of cases, that lead us to the question: which month tend to have more cases ? 
+- There was a decline in the number of cases towards the end of the 2010s, followed by an increase in the early 2020s. A significant occurrence took place in early 2020 that led to an increase in reported cases?
+
+
+```{r cases_seasonality}
+
+
+shoot_cases_month <- shoot_cases_over_time %>%
+                        mutate(MONTH = month(YearMonth, label = TRUE, abbr=FALSE)) %>%
+                        group_by(MONTH) %>%
+                        arrange(MONTH) %>%
+                        summarize(CASES_BY_MONTH = sum(COUNT))
+
+plot_cases_by_month <- ggplot(shoot_cases_month, aes(MONTH, CASES_BY_MONTH)) + 
+                        geom_bar(stat = "identity", fill = "#FF9a98", color = "Black") + 
+                        labs(title = "Cases by month",
+                                x = "Month", 
+                                y = "Number of Cases") +
+                        theme_classic() + 
+                        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+                        
+
+plot_cases_by_month
+
+
+```
+
+It is interesting to note that cases occurring over a year seems a normal distribution, with a higher concentration occurring midway through the year.
+
+
+It is reasonable to conclude that an increase in the number of shootings may result in a corresponding increase in the number of total murders. But that lead us to the next question: have shootings become more lethal?.
+The next area for analysis is the percentages of shootings that result in a murder over time. The analysis is going to be set by quarter to reduce noise
+
+```{r murder_over_time}
+
+pct_murder_cases_over_time <- nypd_shooting %>%
+                              mutate(YearMonth = floor_date(OCCUR_DATE, "quarter")) %>%
+                              group_by(YearMonth, STATISTICAL_MURDER_FLAG) %>%
+                              summarize(MURDER_COUNT = n()) %>%
+                              group_by(YearMonth) %>%
+                              mutate(TOTAL = sum(MURDER_COUNT), Percentage_True = round(ifelse(STATISTICAL_MURDER_FLAG == TRUE, (MURDER_COUNT / TOTAL) * 100, NA), 2)) %>%
+                              filter(STATISTICAL_MURDER_FLAG == TRUE) %>%
+                              ungroup()
+  
+
+pct_murder_cases_over_time
+
+plot_murder_cases_over_time <- ggplot(pct_murder_cases_over_time, aes(YearMonth, Percentage_True)) +
+                                geom_line(color = "#AC6CDA") + 
+                                geom_smooth(method = "lm", color = "#234dc2", se = TRUE) +
+                                labs(title = "Murder proportion in cases by month",
+                                      x = "Month", 
+                                      y = "Percentage of Muder Cases") + 
+                                theme_classic()
+
+plot_murder_cases_over_time
+
+```
+
+As the data illustrates, the fatality rate associated with shootings remains consistent across all reported observations. While the overall tendency is similar. Are some races at higher risk of being involved in a shooting incident? How's the mortality rate?
+
+
+```{r murder_possibility_by_race}
+
+shooting_by_race <- nypd_shooting %>%
+                    group_by(STATISTICAL_MURDER_FLAG, VIC_RACE) %>%
+                    summarize(COUNT = n()) %>%
+                    arrange(STATISTICAL_MURDER_FLAG, ascending = TRUE) %>%
+                    group_by(VIC_RACE) %>%
+                    mutate(TOTAL = sum(COUNT), PCT_MURDER = round(ifelse(STATISTICAL_MURDER_FLAG == TRUE, (COUNT/TOTAL)*100, NA),2)) %>%
+                    ungroup()
+
+shooting_by_race
+
+
+plot_shot_race <- ggplot(shooting_by_race, aes(VIC_RACE, COUNT, size = PCT_MURDER)) +
+                    geom_point(color = "#685DCE") +
+                    geom_text(data = subset(shooting_by_race, !is.na(PCT_MURDER)), aes(label = paste(PCT_MURDER, "%")),  # Add percentage labels
+                              vjust = -2.3,size = 3) +
+                    scale_y_continuous(trans="log10") +
+                    scale_size_continuous(range = c(1, 10)) +
+                    labs(title = "Shooting incidents vs Victim's Race",
+                          x = "Victim's Race", 
+                          y = "Case resulting in murder",
+                          size = "Percentage of Murder") +
+                    theme_classic() + 
+                    theme(axis.text.x = element_text(angle = 60, hjust = 1))
+                    
+
+plot_shot_race
+
+```
+
+As the graph illustrates, the y-axis is presented on a logarithmic scale to accommodate discrepancies between ethnic groups. Individuals of Black ethnicity are significantly more likely to be involved in incidents, whereas other ethnicities exhibit a lower incidence of such occurrences. It is noteworthy that while White individuals experience a relatively low number of incidents, their mortality rate is marginally higher. A further investigation could provide insights into the underlying reasons for this phenomenon.
+
+
+## Conclusions
+
+The "New York Police Department Shooting Incidents" Datasets offer valuable insight into behavioral patterns, victims, and tendencies over time, which may ultimately influence policy and procedure changes. 
+
+It is crucial to identify potential limitations, such as the presence of bias, at the initial stages of the investigation. This includes the identification of common sources of bias, such as selection bias, information bias, and contrast effect. Also, understanding the reasons behind the absence of a significant amount of information is also essential. During the course of this work, we will examine the underlying causes of this phenomenon.
+
+In terms of personal bias, it is possible that I may exhibit confirmation bias and affinity bias, particularly in relation to recent cases of excessive police force. One method of addressing this issue is to challenge one's own assumptions, be mindful of disconfirming evidence, and utilize objective measures to maintain as much structure as possible. 
+
+
+```{r session_info}
+
+sessionInfo()
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
