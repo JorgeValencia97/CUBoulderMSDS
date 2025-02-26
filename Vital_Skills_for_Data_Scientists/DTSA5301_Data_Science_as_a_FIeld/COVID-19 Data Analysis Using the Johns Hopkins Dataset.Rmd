@@ -1,0 +1,424 @@
+---
+title: "COVID-19 Dataset: Extracting Key Pandemic Insights"
+author: "J. Valencia"
+date: "2025-02-25"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+#Upload necesary packages for the work
+library(tidyverse)
+library(lubridate)
+library(scales)
+library(caret)
+library(randomForest)
+
+```
+
+## Objective
+
+The COVID-19 pandemic has profoundly impacted various aspects of daily life, altering social dynamics, work environments, and interpersonal interactions. This project aims to derive meaningful insights from the Johns Hopkins COVID-19 dataset, with the following objectives:
+
+- Analyze the distribution of COVID-19 cases across countries.
+- Examine the distribution of COVID-19-related deaths across countries.
+- Identify additional patterns and insights through data analysis.
+
+## Process
+
+### Import data
+
+The data was sourced from <https://github.com/CSSEGISandData/COVID-19> and is publicly accessible and free to use.
+
+
+*An interactive web-based dashboard to track COVID-19 in real time*
+  Dong, Ensheng et al.
+  The Lancet Infectious Diseases, Volume 20, Issue 5, 533 - 534
+
+```{r import data}
+url <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_"
+file_names <- c("confirmed", "deaths", "recovered")
+global_data <- "_global.csv"
+urls <- str_c(url, file_names, global_data)
+
+covid19_confirmed <- read_csv(urls[1])
+covid19_deaths <- read_csv(urls[2])
+covid19_recovered <- read_csv(urls[3])
+
+```
+
+
+### Be aware of you data.
+
+After importing the data, it is essential to examine the data types to ensure appropriate initial transformations.
+
+```{r df_head}
+covid19_confirmed
+covid19_deaths
+covid19_recovered
+
+```
+
+The datasets include multiple country names, each associated with its respective latitude and longitude, along with a series of time columns where each value represents the cumulative total for the corresponding observation on a given date. We don't have null values. Recovered cases has fewer observations. For the purposes of this analysis, latitude, longitude and province columns will not be utilized.
+
+
+```{r delete columns}
+
+cols_to_delete = c('Province/State', 'Lat', 'Long')
+
+covid19_confirmed <- covid19_confirmed %>% select(-all_of(cols_to_delete))
+covid19_deaths <- covid19_deaths %>% select(-all_of(cols_to_delete))
+covid19_recovered <- covid19_recovered %>% select(-all_of(cols_to_delete))
+
+covid19_confirmed
+covid19_deaths
+covid19_recovered
+
+```
+To improve readability, all date columns will be pivoted
+
+
+```{r df_pivot}
+
+covid19_confirmed <- covid19_confirmed %>% 
+                        pivot_longer(cols = -c("Country/Region"), 
+                                     names_to = "Date", 
+                                     values_to = "Cases_confirmed") %>%
+                        rename(Country = `Country/Region`) %>%
+                        mutate(Date = mdy(Date))
+      
+covid19_deaths <- covid19_deaths %>% 
+                        pivot_longer(cols = -c("Country/Region"), 
+                                     names_to = "Date", 
+                                     values_to = "Cases_deceased")%>%
+                        rename(Country = `Country/Region`) %>%
+                        mutate(Date = mdy(Date))
+
+covid19_recovered <- covid19_recovered %>% 
+                        pivot_longer(cols = -c("Country/Region"), 
+                                     names_to = "Date", 
+                                     values_to = "Cases_recovered")%>%
+                        rename(Country = `Country/Region`) %>%
+                        mutate(Date = mdy(Date))
+
+covid19_confirmed
+covid19_deaths
+covid19_recovered
+
+```
+Next, we will identify and examine any duplicate rows in the dataset.
+
+```{r looking for duplicates}
+
+duplicates_confirmed <- covid19_confirmed %>%
+  count(Country, Date) %>%
+  filter(n > 1) %>%
+  arrange(Country, Date)
+
+duplicates_deaths <- covid19_deaths %>%
+  count(Country, Date) %>%
+  filter(n > 1) %>%
+  arrange(Country, Date)
+
+duplicates_recovered <- covid19_recovered %>%
+  count(Country, Date) %>%
+  filter(n > 1) %>%
+  arrange(Country, Date)
+
+# Print duplicates
+print(duplicates_confirmed)
+print(duplicates_deaths)
+print(duplicates_recovered)
+```
+
+It appears that some countries have duplicate records for the same date. To better understand this issue, we will examine specific examples of how the data is structured.
+
+
+```{r check duplicates}
+all_duplicates_confirmed <- covid19_confirmed %>%
+  group_by(Country, Date) %>%
+  filter(n() > 1) %>%
+  arrange(Country, Date)
+
+all_duplicates_deaths <- covid19_deaths %>%
+  group_by(Country, Date) %>%
+  filter(n() > 1) %>%
+  arrange(Country, Date)
+
+all_duplicates_recovered <- covid19_recovered %>%
+  group_by(Country, Date) %>%
+  filter(n() > 1) %>%
+  arrange(Country, Date)
+
+all_duplicates_confirmed
+all_duplicates_deaths
+all_duplicates_recovered
+```
+
+Inspecting again the data earlier in the datasets, the different Provinces generate the duplicates later, so we will group by country and date, and then add the cases up.
+```{r sum_duplicates}
+covid19_confirmed <- covid19_confirmed %>% 
+                      group_by(Country, Date) %>%
+                      summarize(Cases_confirmed = sum(Cases_confirmed, na.rm = TRUE), .groups = "drop")
+
+covid19_deaths <- covid19_deaths %>% 
+                      group_by(Country, Date) %>%
+                      summarize(Cases_deceased = sum(Cases_deceased, na.rm = TRUE), .groups = "drop")
+
+covid19_recovered <- covid19_recovered %>% 
+                      group_by(Country, Date) %>%
+                      summarize(Cases_recovered = sum(Cases_recovered, na.rm = TRUE), .groups = "drop")
+
+covid19_confirmed
+covid19_deaths
+covid19_recovered
+
+```
+
+
+To facilitate the analysis, we will merge the three datasets into a single unified dataset.
+
+
+```{r merge datasets}
+covid19_dataset <- covid19_confirmed %>%
+                  full_join(covid19_deaths) %>%
+                  full_join(covid19_recovered) %>%
+                  mutate(Country = as.factor(Country))
+covid19_dataset
+
+str(covid19_dataset)
+
+summary(covid19_dataset)
+```
+
+
+Our initial visualization will depict the changes in confirmed cases over time, grouped by country. To enhance readability, we will aggregate the data at the monthly level rather than daily. Since the dataset includes data for all countries, we will focus our analysis on the countries within the Americas.
+
+
+```{r cases_over_time}
+
+Americas_countries <- c("Argentina", "Bahamas", "Barbados", "Belize", "Bolivia", "Brazil", "Canada", "Chile", 
+                        "Colombia", "Costa Rica", "Cuba", "Dominica", "Dominican Republic", "Ecuador", "El Salvador", 
+                        "Grenada", "Guatemala", "Guyana", "Haiti", "Honduras", "Jamaica", "Mexico", "Nicaragua", 
+                        "Panama", "Paraguay", "Peru", "Saint Kitts and Nevis", "Saint Lucia", "Saint Vincent and the Grenadines", 
+                        "Suriname", "Trinidad and Tobago", "US", "Uruguay", "Venezuela")
+
+Americas_over_time <- covid19_dataset %>%
+                              filter(Country %in% Americas_countries)
+
+plot_cases_over_time = ggplot(Americas_over_time, aes(x = Date, y = Cases_confirmed, color = Country)) +
+                              geom_line() +
+                              labs(title = "Confirmed COVID-19 Cases In the Americas",
+                                   y = "Number of Confirmed Cases (Millions)",
+                                   x = "Date") +
+                              scale_y_continuous(labels = label_number(scale = 1e-6, suffix = "M")) +
+                              theme_classic()+
+                              theme(
+                                legend.key.size = unit(0.3, "cm"),
+                                legend.position = "right",
+                                legend.key.height = unit(0.4, "cm"),
+                              ) +
+                              guides(color = guide_legend(ncol = 2))
+
+plot_cases_over_time
+
+  
+```
+
+The United States, followed by Canada, accounts for the majority of cases. Additionally, it is important to examine the number of deaths.
+
+```{r deaths over time}
+
+plot_deaths_over_time = ggplot(Americas_over_time, aes(x = Date, y = Cases_deceased, color = Country)) +
+                              geom_line() +
+                              labs(title = "Confirmed COVID-19 Deaths In the Americas",
+                                   y = "Number of Deceased Cases (Thousands)",
+                                   x = "Date") +
+                              scale_y_continuous(labels = label_number(scale = 1e-3, suffix = "K")) +
+                              theme_classic()+
+                              theme(
+                                legend.key.size = unit(0.3, "cm"),
+                                legend.position = "right",
+                                legend.key.height = unit(0.4, "cm"),
+                              ) +
+                              guides(color = guide_legend(ncol = 2))
+
+plot_deaths_over_time
+
+```
+
+Similarly, the United States and Canada report the highest number of deaths, which may be attributed to their larger overall populations or higher data quality, leading to fewer unreported cases.
+¿Are deaths linearly correlated with number or cases? To determine whether the number of deaths is linearly correlated with the number of cases, we will generate a scatterplot with data grouped by country. Given the large volume of data, values will be presented in three-month intervals.
+
+
+```{r deaths against cases}
+
+deaths_vs_cases = Americas_over_time %>%
+                    filter(
+                      month(Date) %in% c(3,6,9,12) &
+                      day(Date) == days_in_month(Date)
+                    )
+
+color_palette <- c(
+  "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b", "#e377c2", "#7f7f7f",
+  "#bcbd22", "#17becf", "#aec7e8", "#ffbb78", "#98df8a", "#ff9896", "#c5b0d5", "#c49c94",
+  "#f7b6d2", "#c7c7c7", "#dbdb8d", "#9edae5", "#393b79", "#637939", "#8c6d31", "#843c39",
+  "#7b4173", "#5254a3", "#8ca252", "#bd9e39", "#ad494a", "#a55194", "#6b6ecf", "#b5cf6b",
+  "#e7ba52", "#d6616b", "#ce6dbd", "#9c9ede"
+)
+
+deaths_vs_cases_plot = ggplot(deaths_vs_cases, aes(x = Cases_confirmed, y = Cases_deceased, color = Country)) +
+                              geom_point(alpha=0.6) +
+                              labs(title = "Correlation Between Confirmed Cases and Deaths",
+                                   x = "Confirmed Cases (Millions)",
+                                   y = "Deceased Cases (Thousands)",) +
+                              scale_x_continuous(labels = scales::label_number(scale = 1e-6, suffix = "M")) +
+                              scale_y_continuous(labels = scales::label_number(scale = 1e-3, suffix = "K")) +
+                              scale_color_manual(values = color_palette) + #Custom color palette since data exceeds most pallettes availables
+                              theme_classic()+
+                              theme(
+                                legend.key.size = unit(0.3, "cm"),
+                                legend.position = "right",
+                                legend.key.height = unit(0.4, "cm"),
+                              ) +
+                              guides(color = guide_legend(ncol = 2))
+
+deaths_vs_cases
+deaths_vs_cases_plot
+
+```
+The scatterplot reveals that data points are clustered toward the lower left, exhibiting a right-skewed trend. To address this, we will transform the continuous axis scale to a logarithmic scale. However, since some days have values of zero, this transformation may result in −∞ values on the axis.
+
+```{r deaths against cases log}
+deaths_vs_cases_plot = ggplot(deaths_vs_cases, aes(x = Cases_confirmed, y = Cases_deceased, color = Country)) +
+                              geom_point(alpha=0.6) +
+                              labs(title = "Correlation Between Confirmed Cases and Deaths",
+                                   x = "Confirmed Cases (Millions)",
+                                   y = "Deceased Cases (Thousands)",) +
+                              scale_x_log10(labels = scales::label_number(scale = 1e-6, suffix = "M")) +
+                              scale_y_log10(labels = scales::label_number(scale = 1e-3, suffix = "K")) +
+                              scale_color_manual(values = color_palette) + #Custom color palette since data exceeds most pallettes availables
+                              theme_classic()+
+                              theme(
+                                legend.key.size = unit(0.3, "cm"),
+                                legend.position = "right",
+                                legend.key.height = unit(0.4, "cm"),
+                              ) +
+                              guides(color = guide_legend(ncol = 2))
+
+deaths_vs_cases
+deaths_vs_cases_plot
+
+```
+With the logarithmic transformation, the data now exhibits a more linear pattern. Given this correlation, we aim to predict the number of deaths based on features such as location, date, and confirmed cases.
+
+
+```{r deaths prediction using random forest}
+
+# Exctract some other usefull information foor temporal vairables
+Americas_over_time_processed = Americas_over_time %>%
+                    mutate(
+                      Month = month(Date), 
+                      Day= day(Date),
+                      Days_collected = as.numeric(Date - min(Date))
+                    ) %>%
+                    select(-Date)
+
+Americas_over_time_processed$Country <- droplevels(Americas_over_time_processed$Country)
+
+#Split the Data
+set.seed(40)
+train_data_index <- createDataPartition(Americas_over_time_processed$Cases_deceased, p=0.8, list = FALSE)
+train_data <- Americas_over_time_processed[train_data_index, ]
+test_data <- Americas_over_time_processed[-train_data_index, ]
+
+#Train the model
+
+rf <- randomForest(
+  Cases_deceased ~ Country + Cases_confirmed + Month + Day + Days_collected,
+  data = train_data,
+  ntree = 100,
+  importance = TRUE
+)
+
+#Evaluate the model
+predictions <- predict(rf, test_data)
+
+#Feature importance
+importance(rf)
+varImpPlot(rf)
+
+
+```
+From this model, we can conclude the following:
+Days_collected (the number of days since data collection began) is the most significant feature in reducing prediction error.
+Month has a moderate impact on prediction accuracy.
+Day does not contribute meaningfully to the model and may introduce noise.
+Country is a crucial feature for both prediction accuracy and node splitting in the model.
+
+## Conclusions
+
+he Johns Hopkins COVID-19 Datasets provide valuable insights into pandemic dynamics.
+However, it is essential to recognize potential limitations. For instance, while Days_collected was identified as the most important variable, the dataset lacks explicit information on daily variation, which may introduce bias. A more robust approach would involve analyzing day-to-day variability in terms of daily new cases rather than cumulative cases, allowing for a more precise assessment of trends.
+
+
+```{r session_info}
+
+sessionInfo()
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
